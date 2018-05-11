@@ -37,7 +37,7 @@ type poolPolicy struct {
 	// cpu socket topology
 	topology *topology.CPUTopology
 	// pool configuration
-	poolCfg pool.Config
+	poolCfg pool.NodeConfig
 	// pool usage/stats cache
 	stats poolcache.PoolCache
 }
@@ -49,7 +49,7 @@ var _ Policy = &poolPolicy{}
 // and exclusive allocations from named and preconfigured pools of CPU
 // cores.
 func NewPoolPolicy(topology *topology.CPUTopology, numReservedCPUs int, cpuPoolConfig map[string]string) Policy {
-	cfg, err := pool.ParseConfig(topology, takeByTopology, numReservedCPUs, cpuPoolConfig)
+	cfg, err := pool.ParseNodeConfig(numReservedCPUs, cpuPoolConfig)
 	if err != nil {
 		panic(fmt.Errorf("[cpumanager] failed to parse pool configuration %v: %v", cpuPoolConfig, err))
 	}
@@ -69,12 +69,12 @@ func (p *poolPolicy) Start(s state.State) {
 	s.SetAllocator(takeByTopology, p.topology)
 
 	if err := s.Reconfigure(p.poolCfg); err != nil {
-		glog.Errorf("[cpumanager] pool policy failed to start: %s\n", err.Error())
+		glog.Errorf("[cpumanager] pool policy failed to start: %s", err.Error())
 		panic("[cpumanager] - please drain node and remove policy state file")
 	}
 
 	if err := p.validateState(s); err != nil {
-		glog.Errorf("[cpumanager] pool policy invalid state: %s\n", err.Error())
+		glog.Errorf("[cpumanager] pool policy invalid state: %s", err.Error())
 		panic("[cpumanager] - please drain node and remove policy state file")
 	}
 }
@@ -113,7 +113,7 @@ func (p *poolPolicy) AddContainer(s state.State, pod *v1.Pod, container *v1.Cont
 		return nil
 	}
 
-	pool, req, lim := pool.GetContainerPoolResources(container)
+	pool, req, lim := pool.GetContainerPoolResources(pod, container)
 
 	glog.Infof("[cpumanager] pool policy: container %s asks for %d/%d from pool %s", containerID, req, lim, pool)
 
@@ -128,7 +128,7 @@ func (p *poolPolicy) AddContainer(s state.State, pod *v1.Pod, container *v1.Cont
 		return err
 	}
 
-	p.stats.AddContainer(pool, containerID, "", "", int64(req))
+	p.stats.AddContainer(pool, containerID, pod.Name, container.Name, int64(req))
 
 	return nil
 }
