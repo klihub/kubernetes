@@ -17,13 +17,11 @@ limitations under the License.
 package poolcache
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	// "fmt"
-	// "github.com/golang/glog"
-	// "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
-	// "k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
@@ -31,16 +29,16 @@ import (
 
 type poolCache struct {
 	sync.RWMutex
-	pools       map[string]stats.CPUPoolUsage
-	initialized bool
+	pools map[string]stats.CPUPoolUsage
 }
 
 type PoolCache interface {
+	IsInitialized() bool
 	GetCPUPoolStats() stats.CPUPoolStats
 	UpdatePool(pool string, shared, exclusive cpuset.CPUSet, capacity, usage int64)
 	AddContainer(pool, id, pod, name string, cpu int64)
 	RemoveContainer(pool, id string)
-	IsInitialized() bool
+	String() string
 }
 
 var _ PoolCache = &poolCache{}
@@ -51,8 +49,7 @@ var cache *poolCache
 func NewCPUPoolCache() PoolCache {
 	if cache == nil {
 		cache = &poolCache{
-			pools:       make(map[string]stats.CPUPoolUsage),
-			initialized: false,
+			pools: make(map[string]stats.CPUPoolUsage),
 		}
 	}
 
@@ -73,13 +70,14 @@ func (c *poolCache) UpdatePool(pool string, shared, exclusive cpuset.CPUSet, cap
 			Name:       pool,
 			Containers: make(map[string]stats.CPUPoolContainer),
 		}
-		c.pools[pool] = p
 	}
 
 	p.SharedCPUs = shared.String()
 	p.ExclusiveCPUs = exclusive.String()
 	p.Capacity = capacity
 	p.Usage = usage
+
+	c.pools[pool] = p
 }
 
 func (c *poolCache) AddContainer(pool, cid, pod, name string, cpu int64) {
@@ -123,12 +121,19 @@ func (c *poolCache) GetCPUPoolStats() stats.CPUPoolStats {
 }
 
 func (c *poolCache) IsInitialized() bool {
-	if c == nil {
-		return false
+	return c != nil
+}
+
+func (c *poolCache) String() string {
+
+	pools := make([]string, len(c.pools))
+	i := 0
+
+	for pool, d := range c.pools {
+		pools[i] = fmt.Sprintf("pools[%s]: shared=%s, exclusive=%s, capacity=%d, usage=%d",
+			pool, d.SharedCPUs, d.ExclusiveCPUs, d.Capacity, d.Usage)
+		i++
 	}
 
-	c.RLock()
-	defer c.RUnlock()
-
-	return c.initialized
+	return strings.Join(pools, "\n")
 }

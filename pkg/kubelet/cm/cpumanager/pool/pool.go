@@ -648,6 +648,7 @@ func (ps *PoolSet) ReconcileConfig() error {
 
 	ps.reconcile = false
 	for pool, p := range ps.pools {
+		ps.updatePoolMetrics(pool)
 		if !p.isUptodate() {
 			ps.reconcile = true
 		}
