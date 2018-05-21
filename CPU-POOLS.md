@@ -242,6 +242,10 @@ scp /path/to/repo/_output/local/bin/linux/amd64/pool-tool root@$master:/usr/loca
 
 ### Enabling Pool Reconfiguration by pool-tool
 
+Pool-tool is a command-line tool designed for changing CPU pool
+configuration on nodes.  It reads a CPU pool configuration policy and
+applies that to a list of nodes.
+
 In order for pool-tool to do its work, you must enable Dynamic Kubelet
 Configuration for the API server and kubelet. In Kubernetes 1.11 and
 later the feature should be on by default, but in 1.10 users need to
@@ -289,4 +293,42 @@ With all of these in place, pool-tool should be able to alter the kubelet
 configuration.
 
 ## Using pool-tool to Switch Between Different Configurations
+
+Pool-tool is designed to work together with cpumanager
+pool policy. The application sets the kubelet configuration to match
+with the loaded profile file on selected nodes. The profiles are yaml
+files and look like this:
+
+```
+     cpupools:
+       - name: "reserved"
+         cpus: "0-7,9"
+       - name: "default"
+         cpus: "8,10-12"
+```
+
+Note that the file format is subject to change in future versions of
+this tool. The above example would create two cpu pools, reserved and
+default, and assign cpus 0-7 (inclusive range) and 9 to pool reserved
+and cpus 8, 10, 11, and 12 to pool default. There are example profiles
+available in test/kubelet/pool-tool/samples directory of this
+repository.
+
+Usage:
+```
+     pool-tool --profile <profile> [--nodes node1,node2,...] [--port 8001] [--address 127.0.0.1]
+```
+
+In normal use port and address don't need to be changed, given that the
+command is run on kubernetes master node.
+
+Pool-tool works by creating a ConfigMap object which changes the kubelet
+settings. The existing settings are copied to the ConfigMap. After the
+kubelet has been configured to use the new ConfigMap, the kubelet will
+restart with the new configuration. Note that command-line flags given
+to kubelet override the new ConfigMap configuration, but the ConfigMap
+configuration overrides the kubelet configuration provided by
+configuration files listend with --config flag. If the new configuration
+cannot be applied, the kubelet will fall back to the last good
+configuration settings.
 
