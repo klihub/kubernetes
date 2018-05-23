@@ -28,6 +28,8 @@ import "net/http"
 import "gopkg.in/yaml.v2"
 import "crypto/rand"
 
+import netutil "k8s.io/apimachinery/pkg/util/net"
+
 /* The pool-tool application is designed to work together with
  * cpumanager pool policy. The application sets the kubelet
  * configuration to match with the loaded profile file on selected
@@ -151,25 +153,26 @@ func loadProfile(fileName string) *Profile {
 	return &profile
 }
 
-func downloadNodeConfig(nodeName, address, port string) *[]byte {
+func downloadNodeConfig(nodeName, address, port string) ([]byte, error) {
 
 	url := fmt.Sprintf("http://%s:%s/api/v1/nodes/%s/proxy/configz", address, port, nodeName)
 
 	fmt.Printf("Download config from %s ...\n", url)
 
-	resp, err := http.Get(url)
+	client := &http.Client{Transport: netutil.SetOldTransportDefaults(&http.Transport{})}
+	resp, err := client.Get(url)
 	if err != nil {
-		return nil
+		return []byte{}, fmt.Errorf("unable to get URL %q: %s", url, err.Error())
 	}
 	defer resp.Body.Close()
 
 	contents, err := ioutil.ReadAll(resp.Body)
 
 	if err != nil {
-		return nil
+		return []byte{}, fmt.Errorf("failed to read HTTP response: %s", err.Error())
 	}
 
-	return &contents
+	return contents, nil
 }
 
 func parseNodeConfig(fileName string) *Profile {
@@ -233,13 +236,13 @@ func main() {
 	for _, node := range nodes {
 
 		// Download node configuration
-		nodeConfigYaml := downloadNodeConfig(node, address, port)
-		if nodeConfigYaml == nil {
-			panic("Error downloading config for node " + node + ".")
+		nodeConfigYaml, err := downloadNodeConfig(node, address, port)
+		if err != nil {
+			panic("Error downloading config for node " + node + ": " + err.Error())
 		}
 
 		nodeConfig := make(map[interface{}]interface{})
-		err := yaml.Unmarshal([]byte(*nodeConfigYaml), &nodeConfig)
+		err = yaml.Unmarshal(nodeConfigYaml, &nodeConfig)
 		if err != nil {
 			panic("Error parsing node configuration.")
 		}
