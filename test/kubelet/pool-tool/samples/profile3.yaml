@@ -3,5 +3,5 @@ cpupools:
     cpus: "0,1"
   - name: "avx512"
     cpus: "2,3-4"
-  - name: "dpdk"
-    cpus: "5-6"
+  - name: "default"
+    cpus: "@3"

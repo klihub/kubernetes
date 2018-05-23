@@ -1,5 +1,5 @@
 cpupools:
-  - name: "reserved"
-    cpus: "0"
-  - name: "default"
+  - name: "avx512"
     cpus: "1"
+  - name: "dpdk"
+    cpus: "2"

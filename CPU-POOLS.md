@@ -301,18 +301,21 @@ files and look like this:
 
 ```
      cpupools:
-       - name: "reserved"
-         cpus: "0-7,9"
+       - name: "ml"
+         cpus: "4-8,10"
+       - name: "avx512"
+         cpus: "*"
        - name: "default"
-         cpus: "8,10-12"
+         cpus: "@2"
 ```
 
 Note that the file format is subject to change in future versions of
-this tool. The above example would create two cpu pools, reserved and
-default, and assign cpus 0-7 (inclusive range) and 9 to pool reserved
-and cpus 8, 10, 11, and 12 to pool default. There are example profiles
-available in test/kubelet/pool-tool/samples directory of this
-repository.
+this tool. The above example would create two cpu pools, ml and avx512,
+in addition to the always-existing default pool. Cores 4-8 (inclusive
+range) and 10 would be assigned to ml pool, and two unspecified cores
+would be assigned to default pool. The rest of the available cores would
+be assiged to avx512 pool. There are example profiles available in
+test/kubelet/pool-tool/samples directory of this repository.
 
 Usage:
 ```
