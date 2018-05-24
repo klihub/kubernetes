@@ -24,12 +24,14 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	stats "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
 type poolCache struct {
 	sync.RWMutex
-	pools map[string]stats.CPUPoolUsage
+	pools    map[string]stats.CPUPoolUsage
+	topology map[int]stats.CPUInfoStats
 }
 
 type PoolCache interface {
@@ -46,10 +48,23 @@ var _ PoolCache = &poolCache{}
 var cache *poolCache
 
 // singleton pattern, TODO: check concurrency
-func NewCPUPoolCache() PoolCache {
+func NewCPUPoolCache(cpuTopology *topology.CPUTopology) PoolCache {
 	if cache == nil {
+
+		// Get the CPU topology. For now, it's assumed not to change
+		// during kubelet lifetime.
+		topo := make(map[int]stats.CPUInfoStats)
+		for id, info := range cpuTopology.CPUDetails {
+			infoStats := stats.CPUInfoStats{
+				SocketID: info.SocketID,
+				CoreID:   info.CoreID,
+			}
+			topo[id] = infoStats
+		}
+
 		cache = &poolCache{
-			pools: make(map[string]stats.CPUPoolUsage),
+			pools:    make(map[string]stats.CPUPoolUsage),
+			topology: topo,
 		}
 	}
 
@@ -115,8 +130,9 @@ func (c *poolCache) GetCPUPoolStats() stats.CPUPoolStats {
 	}
 
 	return stats.CPUPoolStats{
-		Time:  metav1.NewTime(time.Now()),
-		Pools: pools,
+		Time:     metav1.NewTime(time.Now()),
+		Pools:    pools,
+		Topology: c.topology,
 	}
 }
 
