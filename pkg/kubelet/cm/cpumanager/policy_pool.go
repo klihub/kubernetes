@@ -21,10 +21,10 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/pool"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/poolcache"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 )
 
@@ -57,7 +57,7 @@ func NewPoolPolicy(topology *topology.CPUTopology, numReservedCPUs int, cpuPoolC
 	return &poolPolicy{
 		topology: topology,
 		poolCfg:  cfg,
-		stats: poolcache.NewCPUPoolCache(),
+		stats:    poolcache.NewCPUPoolCache(topology),
 	}
 }
 
@@ -117,8 +117,8 @@ func (p *poolPolicy) AddContainer(s state.State, pod *v1.Pod, container *v1.Cont
 
 	glog.Infof("[cpumanager] pool policy: container %s asks for %d/%d from pool %s", containerID, req, lim, pool)
 
-	if req != 0 && req == lim && req % 1000 == 0 {
-		_, err = s.AllocateCPUs(containerID, pool, int(req / 1000))
+	if req != 0 && req == lim && req%1000 == 0 {
+		_, err = s.AllocateCPUs(containerID, pool, int(req/1000))
 	} else {
 		_, err = s.AllocateCPU(containerID, pool, req)
 	}

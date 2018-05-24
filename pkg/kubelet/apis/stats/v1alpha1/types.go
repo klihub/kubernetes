@@ -234,6 +234,11 @@ type CPUPoolContainer struct {
 	// Stats *ContainerStats
 }
 
+type CPUInfoStats struct {
+	SocketID int `json:"socketid"`
+	CoreID   int `json:"coreid"`
+}
+
 // CPUPoolStats contains data about CPU pools.
 type CPUPoolStats struct {
 	// The time at which these stats were updated.
@@ -241,6 +246,9 @@ type CPUPoolStats struct {
 	// Stats for every CPU pool enabled on the node.
 	// +optional
 	Pools map[string]CPUPoolUsage `json:"pools,omitempty"`
+	// CPU topology (how logical cores, cores, and CPUs are laid out)
+	// +optional
+	Topology map[int]CPUInfoStats `json:"topology,omitempty"`
 }
 
 // MemoryStats contains data about memory usage.
