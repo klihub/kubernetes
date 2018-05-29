@@ -48,16 +48,34 @@ var _ Policy = &poolPolicy{}
 // NewPoolPolicy returns a CPU manager policy that can do both shared
 // and exclusive allocations from named and preconfigured pools of CPU
 // cores.
-func NewPoolPolicy(topology *topology.CPUTopology, numReservedCPUs int, cpuPoolConfig map[string]string) Policy {
+func NewPoolPolicy(cadvisorTopology *topology.CPUTopology, numReservedCPUs int, cpuPoolConfig map[string]string) Policy {
 	cfg, err := pool.ParseNodeConfig(numReservedCPUs, cpuPoolConfig)
 	if err != nil {
 		panic(fmt.Errorf("[cpumanager] failed to parse pool configuration %v: %v", cpuPoolConfig, err))
 	}
 
+	var sysTopology *topology.CPUTopology
+
+	// In order to discover the true CPU topology, we'll need to turn all present
+	// cpus online. If this is not done, we can't handle the offline pool properly.
+
+	err = pool.OnlineAllCpus()
+	if err != nil {
+		// Possibly we are running on a platform which doesn't allow us
+		// to online CPUs. Let's forget onlining and topology discovery
+		// and just use the topology we got from cadvisor.
+		sysTopology = cadvisorTopology
+	} else {
+		sysTopology, err = topology.DiscoverTrue()
+		if err != nil {
+			panic(fmt.Errorf("[cpumanager] failed to discover CPU topology: %v", err))
+		}
+	}
+
 	return &poolPolicy{
-		topology: topology,
+		topology: cadvisorTopology,
 		poolCfg:  cfg,
-		stats:    poolcache.NewCPUPoolCache(topology),
+		stats:    poolcache.NewCPUPoolCache(sysTopology),
 	}
 }
 

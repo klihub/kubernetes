@@ -50,6 +50,8 @@ package pool
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 
@@ -229,6 +231,9 @@ func (nc NodeConfig) setCpuCount(pool string, cfg string) error {
 func (nc NodeConfig) setCpuIds(pool string, cfg string) error {
 	if cset, err := cpuset.Parse(cfg); err != nil {
 		return fmt.Errorf("invalid configuration for pool %s (%v)", pool, err)
+	} else if pool == OfflinePool && cset.Contains(0) {
+		return fmt.Errorf("invalid configuration for pool %s (core 0 can't be put offline)",
+			pool)
 	} else {
 		nc[pool] = &Config{
 			Size: cset.Size(),
@@ -270,6 +275,23 @@ func (cfg *Config) String() string {
 	} else {
 		return fmt.Sprintf("<any %d CPUs>", cfg.Size)
 	}
+}
+
+func OnlineAllCpus() error {
+	allCpus, err := topology.DiscoverAllCpus()
+
+	if err != nil {
+		return err
+	}
+
+	for _, cpu := range allCpus.ToSlice() {
+		err = toggleCore(cpu, true)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Get the CPU pool, request, and limit of a container.
@@ -441,6 +463,11 @@ func (ps *PoolSet) Reconfigure(cfg NodeConfig) error {
 
 	// make sure we update pool metrics upon startup
 	ps.updateMetrics()
+
+	// Check if the offline pool matches reality -- that is, if the correct
+	// cpu cores are offlined.
+	ps.updateOfflineCores()
+
 	return nil
 }
 
@@ -983,6 +1010,60 @@ func (ps *PoolSet) updatePoolMetrics(pool string) {
 func (ps *PoolSet) updateMetrics() {
 	for pool, _ := range ps.pools {
 		ps.updatePoolMetrics(pool)
+	}
+}
+
+func toggleCore(core int, on bool) error {
+
+	if core == 0 {
+		// can't online or offline cpu0
+		return nil
+	}
+
+	path := fmt.Sprintf("/sys/devices/system/cpu/cpu%d/online", core)
+
+	value := "0"
+	if on {
+		value = "1"
+	}
+
+	var content = []byte(value)
+
+	err := ioutil.WriteFile(path, content, os.FileMode(0644))
+
+	if err != nil {
+		logError("Failed to set '%s' to '%s'", path, value)
+		return err
+	}
+
+	return nil
+}
+
+// Update core on/off status based to "offline" pool.
+func (ps *PoolSet) updateOfflineCores() {
+
+	allCores := cpuset.CPUSet{}
+	for _, pool := range ps.pools {
+		allCores = allCores.Union(pool.pinned.Union(pool.shared))
+	}
+
+	offlineCores := cpuset.CPUSet{}
+	offlinePool, ok := ps.pools[OfflinePool]
+	if ok {
+		offlineCores = offlinePool.shared.Union(offlinePool.pinned)
+	}
+
+	onlineCores := allCores.Difference(offlineCores)
+
+	// Turn on first, off next
+	for _, core := range onlineCores.ToSlice() {
+		logInfo("Turn cpu core %d on", core)
+		toggleCore(core, true)
+	}
+
+	for _, core := range offlineCores.ToSlice() {
+		logInfo("Turn cpu core %d off", core)
+		toggleCore(core, false)
 	}
 }
 

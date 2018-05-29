@@ -18,7 +18,10 @@ package topology
 
 import (
 	"fmt"
+	"io/ioutil"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/golang/glog"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
@@ -173,6 +176,82 @@ func Discover(machineInfo *cadvisorapi.MachineInfo) (*CPUTopology, error) {
 		NumCPUs:    numCPUs,
 		NumSockets: len(machineInfo.Topology),
 		NumCores:   numPhysicalCores,
+		CPUDetails: CPUDetails,
+	}, nil
+}
+
+func DiscoverAllCpus() (cpuset.CPUSet, error) {
+	presentPath := "/sys/devices/system/cpu/present"
+	presentData, err := ioutil.ReadFile(presentPath)
+	if err != nil {
+		return cpuset.CPUSet{}, err
+	}
+
+	allCpus, err := cpuset.Parse(strings.TrimSpace(string(presentData[:])))
+	if err != nil {
+		return cpuset.CPUSet{}, err
+	}
+
+	return allCpus, nil
+}
+
+// DiscoverTrue returns CPUTopology based on /sys statistics on Linux
+func DiscoverTrue() (*CPUTopology, error) {
+
+	// only online CPUs contain topology information
+	onlinePath := "/sys/devices/system/cpu/online"
+	onlineData, err := ioutil.ReadFile(onlinePath)
+	if err != nil {
+		return nil, err
+	}
+
+	allCpus, err := cpuset.Parse(strings.TrimSpace(string(onlineData[:])))
+	if err != nil {
+		return nil, err
+	}
+
+	CPUDetails := CPUDetails{}
+	numCPUs := len(allCpus.ToSlice())
+	physicalCores := make(map[int]bool)
+	physicalSockets := make(map[int]bool)
+
+	for _, cpuId := range allCpus.ToSlice() {
+		coreIdPath := fmt.Sprintf("/sys/devices/system/cpu/cpu%d/topology/core_id", cpuId)
+		coreIdData, err := ioutil.ReadFile(coreIdPath)
+		if err != nil {
+			return nil, err
+		}
+
+		coreId, err := strconv.Atoi(strings.TrimSpace(string(coreIdData[:])))
+		if err != nil {
+			return nil, err
+		}
+
+		physicalCores[coreId] = true
+
+		physicalPackageIdPath := fmt.Sprintf("/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpuId)
+		physicalPackageIdData, err := ioutil.ReadFile(physicalPackageIdPath)
+		if err != nil {
+			return nil, err
+		}
+
+		physicalPackageId, err := strconv.Atoi(strings.TrimSpace(string(physicalPackageIdData[:])))
+		if err != nil {
+			return nil, err
+		}
+
+		physicalSockets[physicalPackageId] = true
+
+		CPUDetails[cpuId] = CPUInfo{
+			CoreID:   coreId,
+			SocketID: physicalPackageId,
+		}
+	}
+
+	return &CPUTopology{
+		NumCPUs:    numCPUs,
+		NumSockets: len(physicalSockets),
+		NumCores:   len(physicalCores),
 		CPUDetails: CPUDetails,
 	}, nil
 }
