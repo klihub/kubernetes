@@ -23,11 +23,11 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/apiserver/pkg/admission"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	//utilfeature "k8s.io/apiserver/pkg/util/feature"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
-	kubefeatures "k8s.io/kubernetes/pkg/features"
+	//kubefeatures "k8s.io/kubernetes/pkg/features"
 )
 
 const (
@@ -68,7 +68,7 @@ func NewCpuPoolPlugin() *CpuPoolPlugin {
 }
 
 // Admit enforces, if necessary, extra resource constraints for CPU pool allocation by adding
-// extended resource requests which prevent the scheduler for picking a node with enough
+// extended resource requests which prevent the scheduler for picking a node without enough
 // free CPU capacity in the requested CPU pool.
 func (p *CpuPoolPlugin) Admit(a admission.Attributes) error {
 	if !isPluginEnabled() {
@@ -120,13 +120,19 @@ func (p *CpuPoolPlugin) setupCpuPool(pod *api.Pod) error {
 	}
 
 	for i := range pod.Spec.InitContainers {
-		if err := addPoolResource(&pod.Spec.InitContainers[i]); err != nil {
+		if err := addPoolResource(pod.Spec.InitContainers[i].Resources.Requests); err != nil {
+			return err
+		}
+		if err := addPoolResource(pod.Spec.InitContainers[i].Resources.Limits); err != nil {
 			return err
 		}
 	}
 
 	for i := range pod.Spec.Containers {
-		if err := addPoolResource(&pod.Spec.Containers[i]); err != nil {
+		if err := addPoolResource(pod.Spec.Containers[i].Resources.Requests); err != nil {
+			return err
+		}
+		if err := addPoolResource(pod.Spec.Containers[i].Resources.Limits); err != nil {
 			return err
 		}
 	}
@@ -134,55 +140,72 @@ func (p *CpuPoolPlugin) setupCpuPool(pod *api.Pod) error {
 	return nil
 }
 
-// addPoolResource extends the given container with an extended resource request for a CPU pool.
-func addPoolResource(c *api.Container) error {
-	var pool, cpu *resource.Quantity = nil, nil
+// etPoolResources looks up the CPU and pool resources, and checks for multiple pool requests
+func getPoolResources(rl api.ResourceList) (*resource.Quantity, *resource.Quantity, error) {
+	var cpu, pool *resource.Quantity
+	var cq, pq resource.Quantity
 
-	if c.Resources.Requests == nil {
-		return nil
+	if rl == nil {
+		return nil, nil, nil
 	}
+
+	if qty, ok := rl[api.ResourceCPU]; ok {
+		cq = qty
+		cpu = &cq
+	}
+
+	for res, qty := range rl {
+		if !strings.HasPrefix(res.String(), ResourcePrefix) {
+			continue
+		}
+
+		if pool != nil {
+			return nil, nil, fmt.Errorf("multiple pool resources (%s, %s) requested",
+				pool.String(), res.String())
+		}
+
+		pq = qty
+		pool = &pq
+	}
+
+	return cpu, pool, nil
+}
+
+// addPoolResource extends the given container with an extended resource request for a CPU pool.
+func addPoolResource(rl api.ResourceList) error {
+	var cpu, pool *resource.Quantity
+	var err error
 
 	//
 	// Find any native and pool CPU requests, then
 	//
-	// - if both present, do nothing (will be validated later)
+	// - requesting multiple pools is an error
+	// - if both present, do nothing (validate later)
 	// - if pool present, add corresponding native
 	// - if native present, add corresponding default pool
 	//
 
-	if res, ok := c.Resources.Requests[api.ResourceCPU]; ok {
-		cpu = &res
+	if cpu, pool, err = getPoolResources(rl); err != nil {
+		return err
 	}
 
-	for name, res := range c.Resources.Requests {
-		if strings.HasPrefix(name.String(), ResourcePrefix) {
-			pool = &res
-			break
-		}
-	}
-
-	if cpu != nil && pool != nil {
-		// both native and pool CPU request found
+	if (cpu != nil && pool != nil) || (cpu == nil && pool == nil) {
 		return nil
 	}
 
 	if pool != nil {
-		// only pool CPU request, add native
 		val := pool.Value()
 		cpu = resource.NewMilliQuantity(val, resource.DecimalSI)
+		rl[api.ResourceCPU] = *cpu
 
-		c.Resources.Requests[api.ResourceCPU] = *cpu
-
-		glog.Infof("[%s] requesting native CPU %s = %dm", PluginName, api.ResourceCPU.String(), val)
+		glog.Infof("[%s] requesting native CPU %s = %s (%s pool)", PluginName, api.ResourceCPU.String(), cpu.String(), pool.String())
 	} else {
-		// only native CPU request, add 'default' pool one
 		val := cpu.MilliValue()
 		pool = resource.NewQuantity(val, resource.DecimalSI)
 		name := api.ResourceName(ResourcePrefix + DefaultPool)
+		rl[name] = *pool
 
-		c.Resources.Requests[name] = *pool
-
-		glog.Infof("[%s] requesting pool CPU %s = %d", PluginName, name.String(), val)
+		glog.Infof("[%s] requesting pool CPU %s = %s (%s native)", PluginName, name.String(), pool.String(), cpu.String())
 	}
 
 	return nil
@@ -199,13 +222,29 @@ func (p *CpuPoolPlugin) validateCpuPool(pod *api.Pod) error {
 	}
 
 	for i := range pod.Spec.InitContainers {
-		if err := validatePoolResource(&pod.Spec.Containers[i]); err != nil {
+		name := pod.Spec.InitContainers[i].Name
+
+		requests := pod.Spec.InitContainers[i].Resources.Requests
+		if err := validatePoolResource(name, requests); err != nil {
+			return err
+		}
+
+		limits := pod.Spec.InitContainers[i].Resources.Limits
+		if err := validatePoolResource(name, limits); err != nil {
 			return err
 		}
 	}
 
 	for i := range pod.Spec.Containers {
-		if err := validatePoolResource(&pod.Spec.Containers[i]); err != nil {
+		name := pod.Spec.Containers[i].Name
+
+		requests := pod.Spec.Containers[i].Resources.Requests
+		if err := validatePoolResource(name, requests); err != nil {
+			return err
+		}
+
+		limits := pod.Spec.Containers[i].Resources.Limits
+		if err := validatePoolResource(name, limits); err != nil {
 			return err
 		}
 	}
@@ -214,37 +253,28 @@ func (p *CpuPoolPlugin) validateCpuPool(pod *api.Pod) error {
 }
 
 // validatePoolResource validates the CPU pool request against the native CPU request.
-func validatePoolResource(c *api.Container) error {
-	var  pool, cpu *resource.Quantity = nil, nil
+func validatePoolResource(container string, rl api.ResourceList) error {
+	var cpu, pool *resource.Quantity
+	var err error
 
-	// For the validity check to pass we need to have:
-	//  - no pool label, no CPU request, no pool request, or
-	//  - no CPU request and a label-matching pool request with value 1, or
-	//  - a CPU request and a label-matching pool request with equal value * 1000
-
-	if c.Resources.Requests != nil {
-		for name, res := range c.Resources.Requests {
-			if name == api.ResourceCPU {
-				cpu = &res
-			} else if strings.HasPrefix(name.String(), ResourcePrefix) {
-				if pool != nil {
-					return fmt.Errorf("container %s: multiple CPU pools", c.Name)
-				}
-				pool = &res
-			}
-		}
+	if cpu, pool, err = getPoolResources(rl); err != nil {
+		return err
 	}
+
+	// For the validity check to pass the container needs to have :
+	//  - neither CPU nor pool request, or
+	//  - a pool request with a consistent pool request
 
 	if pool == nil && cpu == nil {
 		return nil
 	}
 
 	if pool == nil || cpu == nil {
-		return fmt.Errorf("container %s: inconsistent native vs. pool CPU requests", c.Name)
+		return fmt.Errorf("container %s: inconsistent native vs. pool CPU requests", container)
 	}
 
 	if cpu.MilliValue() != pool.Value() {
-		return fmt.Errorf("container %s: inconsistent native (%d) vs. pool (%d) CPU requests", cpu.MilliValue(), pool.Value())
+		return fmt.Errorf("container %s: inconsistent native (%d) vs. pool (%d) CPU requests", container, cpu.MilliValue(), pool.Value())
 	}
 
 	return nil
@@ -252,7 +282,8 @@ func validatePoolResource(c *api.Container) error {
 
 // isPluginEnabled checks if our associated feature gate is enabled
 func isPluginEnabled() bool {
-	return utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager)
+	//return utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager)
+	return true
 }
 
 // shouldHandleOperation checks the plugin should act on the given admission operation
