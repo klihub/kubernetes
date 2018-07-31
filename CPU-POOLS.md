@@ -120,45 +120,30 @@ scp /path/to/repo/_output/local/bin/linux/amd64/kubelet root@$node:/usr/local/bi
 ```
 
 Next, on every node override the kubelet service to run your compiled binary:
-
 ```
-# Copy kubelet service to a locally overridable location, if necessary.
-mkdir -p /etc/systemd/system
-if [ -f /usr/lib/systemd/system/kubelet.service ]; then
-    cp /usr/lib/systemd/system/kubelet.service /etc/systemd/system
-fi
-
-# Override kubelet location and configuration.
-mkdir -p /etc/systemd/system/kubelet.service.d
-cat <<EOF
-[Service]
-Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/boot
-strap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
-Environment="KUBELET_SYSTEM_PODS_ARGS=--pod-manifest-path=/etc/kubernetes/manife
-sts --allow-privileged=true"
-Environment="KUBELET_NETWORK_ARGS=--network-plugin=cni --cni-conf-dir=/etc/cni/n
-et.d --cni-bin-dir=/opt/cni/bin"
-Environment="KUBELET_DNS_ARGS=--cluster-dns=10.96.0.10 --cluster-domain=cluster.
-local"
-Environment="KUBELET_AUTHZ_ARGS=--authorization-mode=Webhook --client-ca-file=/e
-tc/kubernetes/pki/ca.crt"
-Environment="KUBELET_CADVISOR_ARGS=--cadvisor-port=0"
-Environment="KUBELET_CGROUP_ARGS=--cgroup-driver=systemd"
-Environment="KUBELET_CERTIFICATE_ARGS=--rotate-certificates=true --cert-dir=/var
-/lib/kubelet/pki"
-ExecStart=
-ExecStart=/usr/local/bin/kubelet \$KUBELET_KUBECONFIG_ARGS \$KUBELET_SYSTEM_PODS_ARGS \$KUBELET_NETWORK_ARGS \$KUBELET_DNS_ARGS \$KUBELET_AUTHZ_ARGS \$KUBELET_CADVISOR_ARGS \$KUBELET_CGROUP_ARGS \$KUBELET_CERTIFICATE_ARGS \$KUBELET_EXTRA_ARGS
-EOF > /etc/systemd/system/kubelet.service.d/10-kubelet-binary.conf
+mv /usr/bin/kubelet /usr/bin/kubelet.orig
+ln -s /usr/local/bin/kubelet /usr/bin/kubelet
 ```
 
-Next, on every node, enable CPU pool support:
+Next, on every node, enable CPU pool support. Since kubelet
+configurations are bit different, make sure that you will have the
+following options added to the kubelet command line:
+
+1. `--feature-gates=CPUManager=true`
+2. `--cpu-manager-policy=pool`
+3. `--kube-reserved=cpu=800`
+
+One way to do this, on some systems configured with `kubeadm`, might be
+to add the a systemd configuration snippet with the following shell
+commands:
 
 ```
 # Enable CPU Pools.
-cat << EOF
+mkdir -p /etc/systemd/system/kubelet.service.d
+cat << EOF > /etc/systemd/system/kubelet.service.d/20-cpu-pools.conf
 [Service]
 Environment="KUBELET_EXTRA_ARGS=--feature-gates=CPUManager=true --cpu-manager-policy=pool --kube-reserved=cpu=800m"
-EOF > /etc/systemd/system/kubelet.service.d/20-cpu-pools.conf
+EOF
 ```
 
 Finally, on every node, restart the kubelet service:
@@ -168,6 +153,9 @@ Finally, on every node, restart the kubelet service:
 systemctl daemon-reload
 systemctl restart kubelet.service
 ```
+
+Verify the command line arguments with `ps aux | grep kubelet` or
+similar.
 
 ### Updating kube-apiserver
 
@@ -221,7 +209,7 @@ spec:
   - command:
     - /cpu-pools/kube-apiserver
 ...
-    - --feature-gates=CPUManager=True
+    - --feature-gates=CPUManager=true
     - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota,CpuPool
 ...
 ```
@@ -257,17 +245,12 @@ First, create a directory for the configuration:
 mkdir /var/lib/kubelet/config
 ```
 
-Then add the related command-line options to the kubelet command line:
+Then add the related command-line options to the kubelet command line
+using the same technique which you used when adding the CPU manager
+parameters there:
 
-```
-cat <<EOF
-[Service]
-Environment="KUBELET_DYNAMIC_CONFIG_ARGS=--feature-gates=DynamicKubeletConfig=true --dynamic-config-dir=/var/lib/kubelet/config"
-ExecStart=
-ExecStart=/usr/local/bin/kubelet \$KUBELET_KUBECONFIG_ARGS \$KUBELET_SYSTEM_PODS_ARGS \$KUBELET_NETWORK_ARGS \$KUBELET_DNS_ARGS \$KUBELET_AUTHZ_ARGS \$KUBELET_CADVISOR_ARGS \$KUBELET_CGROUP_ARGS \$KUBELET_CERTIFICATE_ARGS \$KUBELET_EXTRA_ARGS
-\$KUBELET_DYNAMIC_CONFIG_ARGS
-EOF > /etc/systemd/system/kubelet.service.d/30-kubelet-binary.conf
-```
+1. `--feature-gates=DynamicKubeletConfig=true`
+2. `--dynamic-config-dir=/var/lib/kubelet/config`
 
 Next, enable the same feature for the API server by including the following
 snippet in /etc/kubernetes/manifests/kube-apiserver.yaml:
@@ -331,7 +314,7 @@ kubelet has been configured to use the new ConfigMap, the kubelet will
 restart with the new configuration. Note that command-line flags given
 to kubelet override the new ConfigMap configuration, but the ConfigMap
 configuration overrides the kubelet configuration provided by
-configuration files listend with --config flag. If the new configuration
+configuration files listed with --config flag. If the new configuration
 cannot be applied, the kubelet will fall back to the last good
 configuration settings.
 
