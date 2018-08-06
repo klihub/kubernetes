@@ -1,320 +1,184 @@
-## Introduction
+# Introduction
+This is a modified version of the corresponding branch of the stock Kubernetes git tree. The set of extra patches in this tree introduces the concept of CPU pools to Kubernetes. CPU pools allow the administrator to partition a node’s CPU cores into pools. Workloads can then request CPU resources from a given pool using extended resources. This guides the scheduler to place the workload only on nodes that can fulfill the pool request. Once scheduled to a capable node, a new CPUManager policy, the pool policy, arranges for the workload to be run on CPU cores belonging to the correct pool.  
 
-This is a modified version of the corresponding branch of the stock
-Kubernetes git tree. The set of extra patches in this tree introduces
-the concept of CPU pools to Kubernetes. CPU pools allow the administrator
-to partition a node’s CPU cores into pools. Workloads can then request CPU
-resources from a given pool using extended resources. This guides the
-scheduler to place the workload only on nodes that can fulfill the pool
-request. Once scheduled to a capable node, a new CPUManager policy, the
-pool policy, arranges for the workload to be run on CPU cores belonging
-to the correct pool.
+There are various reasons why one might want to further partition CPUs in a node, including  
 
-There are various reasons why one might want to further partition CPUs
-in a node, including
+- To divide and reserve CPU capacity between classes of commonly run workloads and do so with better resolution than what is achievable by dedicating full nodes to classes of workloads.
 
-* To divide and reserve CPU capacity between classes of commonly run
-workloads and do so with better resolution than what is achievable by
-dedicating full nodes to classes of workloads.
+- To reserve CPUs with certain characteristics for high-priority workloads or workloads that are known to benefit the most from this. One example of this could be reserving the best turbo-boostable cores in a node for special workloads. Another example could be running some workloads with some particular CPU configuration, for instance only on cores which have HT disabled.
+- To isolate and protect unrelated workloads from ones which are known to potentially cause a dynamic change in overall system behaviour which might lead to performance degradation in other workloads if they happen to run on particular cores wrt. the one executing the offending workload. For instance, dedicate some cores to workloads which heavily utilise AVX-512 instructions.
 
-* To reserve CPUs with certain characteristics for high-priority workloads
-or workloads that are known to benefit the most from this. One example of
-this could be reserving the best turbo-boostable cores in a node for
-special workloads. Another example could be running some workloads with
-some particular CPU configuration, for instance only on cores which have
-HT disabled.
+# Building CPU Pool Support
+There are two Kubernetes components which implement the core of CPU pool support. Furthermore there is a new utility for monitoring and configuring CPU pools, as well as switching between pre-defined pool setups.  
 
-* To isolate and protect unrelated workloads from ones which are known to
-potentially cause a dynamic change in overall system behaviour which might
-lead to performance degradation in other workloads if they happen to run
-on particular cores wrt. the one executing the offending workload. For
-instance, dedicate some cores to workloads which heavily utilise AVX-512
-instructions.
+The new Kubernetes additions are the 'CpuPool' mutating admission controller and the 'pool' CPUManager policy backend. The new pool configuration and monitoring utility is 'pool-tool'.  
 
-## Building CPU Pool Support
+## Building the CpuPool Admission Controller
+The CpuPool admission controller is a plugin in the Kubernetes API server, kube-apiserver. You can build from this git tree by building kube-apiserver, for instance by executing  
 
-There are two Kubernetes components which implement the core of CPU pool
-support. Furthermore there is a new utility for monitoring and configuring
-CPU pools, as well as switching between pre-defined pool setups.
+    make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=cmd/kube-apiserver
 
-The new Kubernetes additions are the 'CpuPool' mutating admission controller
-and the 'pool' CPUManager policy backend. The new pool configuration and
-monitoring utility is 'pool-tool'.
+A successfuly build On a 64-bit Linux system this will produce the binary as  
 
-### Building the CpuPool Admission Controller
+    _output/local/bin/linux/amd64/kube-apiserver  
 
-The CpuPool admission controller is a plugin in the Kubernetes API server,
-kube-apiserver. You can build from this git tree by building kube-apiserver,
-for instance by executing
+relative to the top of your git tree.  
 
+## Building the 'pool' CPUManager policy Backend
+The 'pool' CPUManager policy backend is part of kubelet, there to build it you simply need to build kubelet from this tree, for instance with the following command:  
+
+     make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=cmd/kubelet  
+
+A successfuly build On a 64-bit Linux system this will produce the binary as  
+
+    _output/local/bin/linux/amd64/kubelet
+
+relative to the top of your git tree.  
+
+## Building the Pool Configuration and Monitoring Utility, pool-tool
+Pool-tool is a separate stanalone binary. You can build with the following command:  
+
+    make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=test/kubelet/pool-tool
+
+A successfuly build On a 64-bit Linux system this will produce the binary as  
+    _output/local/bin/linux/amd64/pool-tool
+
+# Taking CPU Pools Into Use in Your Cluster
+To enable CPU pool support, you need to change the two affected components of your cluster, kubelet and kube-apiserver, with the versions you compiled from this git tree.  
+
+Kubelet is run natively on every node of your cluster, so you will need to copy (or make it otherwise available, for instance using NFS) to every node. It is typically started by systemd so we provide a sample configuration here showing how you can modify your systemd configuration to override the location and configuration of kubelet.  
+
+Kube-apiserver is run on your master node as a pod. The binary can be updated by creating a modified version of the pod image and serving it from a locally hosted docker registry. However, since the configuration/manifest of the apiserver needs to be modified as well, it is easier to set up the manifest to mount an extra part of the host filesystem as a volume inside the apiserver container and run the binary from that mount. This is what our example shows.  
+
+## Updating kubelet(for every node including master and worker)
+
+First enable kubelet start from /etc/systemd/system  
+
+    if [ -f /usr/lib/systemd/system/kubelet.service ]; then
+    cp /usr/lib/systemd/system/kubelet.service /etc/systemd/system
+    fi
+
+> 
+>>- For every node of your cluster, copy the updated kubelet binary to your node:  
+
+    scp /path/to/repo/_output/local/bin/linux/amd64/kubelet root@$node:/usr/local/bin  
+
+>>- create a soft link to /usr/local/bin:  
+
+    ln -s /usr/local/bin/kubelet /usr/bin/kubelet  
+***
+**or**
+
+>>replace the kubelet in /usr/bin/  
+
+    scp /path/to/repo/_output/local/bin/linux/amd64/kubelet root@$node:/usr/bin/  
+
+Next, create a directory for the configuration:(for master and worker node)  
+
+    mkdir /var/lib/kubelet/config
+    
+
+Next, on every node, enable CPU pool support in /etc/systemd/system/kubelet.service.d/20-cpu-pools.conf which you should create:
+
+    [Service]
+    Environment="KUBELET_EXTRA_ARGS=--feature-gates=DynamicKubeletConfig=true --dynamic-config-dir=/var/lib/kubelet/config --feature-gates=CPUManager=true --cpu-manager-policy=pool --kube-reserved=cpu=800m"
+
+notes:
 ```
- make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=cmd/kube-apiserver
-```
-
-A successfuly build On a 64-bit Linux system this will produce the binary as
-
-```
-_output/local/bin/linux/amd64/kube-apiserver
-```
-
-relative to the top of your git tree.
-
-### Building the 'pool' CPUManager policy Backend
-
-The 'pool' CPUManager policy backend is part of kubelet, there to build it you
-simply need to build kubelet from this tree, for instance with the following
-command:
-
-```
- make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=cmd/kubelet
-```
-
-A successfuly build On a 64-bit Linux system this will produce the binary as
-
-```
-_output/local/bin/linux/amd64/kubelet
-```
-
-relative to the top of your git tree.
-
-### Building the Pool Configuration and Monitoring Utility, pool-tool
-
-Pool-tool is a separate stanalone binary. You can build with the following
-command:
-
-```
- make KUBE_VERBOSE=1 KUBE_RELEASE_RUN_TESTS=n KUBE_FASTBUILD=true WHAT=test/kubelet/pool-tool
-```
-
-A successfuly build On a 64-bit Linux system this will produce the binary as
-
-```
-_output/local/bin/linux/amd64/pool-tool
+--feature-gates=DynamicKubeletConfig: In order for pool-tool to do its work, you must enable Dynamic Kubelet Configuration for the API server(we will enable it in the following section) and kubelet. In Kubernetes 1.11 and later the feature should be on by default, but in 1.10 users need to enable the feature gate manually.  
 ```
 
-## Taking CPU Pools Into Use in Your Cluster
+## Restart kubelet  
 
-To enable CPU pool support, you need to change the two affected components
-of your cluster, kubelet and kube-apiserver, with the versions you compiled
-from this git tree.
+First, should drain the node and delete cpu_manager_state
 
-Kubelet is run natively on every node of your cluster, so you will need to
-copy (or make it otherwise available, for instance using NFS) to every node.
-It is typically started by systemd so we provide a sample configuration here
-showing how you can modify your systemd configuration to override the location
-and configuration of kubelet.
+    rm /var/lib/kubelet/cpu_manager_state
+then, restart kubelet
 
-Kube-apiserver is run on your master node as a pod. The binary can be updated
-by creating a modified version of the pod image and serving it from a locally
-hosted docker registry. However, since the configuration/manifest of the
-apiserver needs to be modified as well, it is easier to set up the manifest
-to mount an extra part of the host filesystem as a volume inside the apiserver
-container and run the binary from that mount. This is what our example shows.
+    systemctl daemon-reload
+    systemctl restart kubelet.service
 
-### Updating kubelet
 
-For every node of your cluster, copy the updated kubelet binary to your node:
+# Make the Pool Configuration and Monitoring Utility Availble
+Assuming you usually manage your cluster from within the master node, copy the pool configuration and monitoring utility, pool-tool to your master node:  
 
-```
-scp /path/to/repo/_output/local/bin/linux/amd64/kubelet root@$node:/usr/local/bin
-```
+    scp /path/to/repo/_output/local/bin/linux/amd64/pool-tool root@$master:/usr/local/bin  
 
-Next, on every node override the kubelet service to run your compiled binary:
-```
-mv /usr/bin/kubelet /usr/bin/kubelet.orig
-ln -s /usr/local/bin/kubelet /usr/bin/kubelet
-```
+# Enabling Pool Reconfiguration by pool-tool on master node
+Pool-tool is a command-line tool designed for changing CPU pool configuration on nodes. It reads a CPU pool configuration policy and applies that to a list of nodes.  
 
-Next, on every node, enable CPU pool support. Since kubelet
-configurations are bit different, make sure that you will have the
-following options added to the kubelet command line:
+Enable the same feature for the API server by including the following snippet in /etc/kubernetes/manifests/kube-apiserver.yaml for master node:  
 
-1. `--feature-gates=CPUManager=true`
-2. `--cpu-manager-policy=pool`
-3. `--kube-reserved=cpu=800`
+    ...
+    spec:
+    containers:
+    - command:
+      - kube-apiserver
+      ...
+      - --feature-gates=CPUManager=true
+      - --feature-gates=DynamicKubeletConfig=true
+      - --admission-control=...
 
-One way to do this, on some systems configured with `kubeadm`, might be
-to add the a systemd configuration snippet with the following shell
-commands:
+Next, restart kubelet  
 
-```
-# Enable CPU Pools.
-mkdir -p /etc/systemd/system/kubelet.service.d
-cat << EOF > /etc/systemd/system/kubelet.service.d/20-cpu-pools.conf
-[Service]
-Environment="KUBELET_EXTRA_ARGS=--feature-gates=CPUManager=true --cpu-manager-policy=pool --kube-reserved=cpu=800m"
-EOF
-```
+    systemctl daemon-reload
+    systemctl restart kubelet
 
-Finally, on every node, restart the kubelet service:
+Finally, run kube-proxy to enable pool-tool to talk to the API server:  
 
-```
-# Restart kubelet
-systemctl daemon-reload
-systemctl restart kubelet.service
-```
+    kubectl proxy -p 8001&
 
-Verify the command line arguments with `ps aux | grep kubelet` or
-similar.
+With all of these in place, pool-tool should be able to alter the kubelet configuration.  
 
-### Updating kube-apiserver
+# Using pool-tool to Switch Between Different Configurations
+Pool-tool is designed to work together with cpumanager pool policy. The application sets the kubelet configuration to match with the loaded profile file on selected nodes. The profiles are yaml files and look like this:  
 
-Copy the updated kube-apiserver binary to your master mode:
-
-```
-scp /path/to/repo/_output/local/bin/linux/amd64/kube-apiserver root@$master:/usr/local/bin
-```
-
-Next, on you master node, modify the apiserver manifest to run the updated
-binary by including this in /etc/kubernetes/manifests/kube-apiserver.yaml:
-
-```
-...
-spec:
-  containers:
-  - command:
-    - /cpu-pools/kube-apiserver
-...
-    volumeMounts:
-    - mountPath: /etc/pki
-      name: ca-certs-etc-pki
-      readOnly: true
-...
-    - mountPath: /usr/local/bin
-      name: cpu-pools
-      readOnly: true
-  hostNetwork: true
-  volumes:
-  - hostPath:
-      path: /etc/ssl/certs
-      type: DirectoryOrCreate
-    name: ca-certs
-...
-  - hostPath:
-      path: /cpu-pools
-      type: DirectoryOrCreate
-    name: cpu-pools
-status: {}
-
-```
-
-Next, on your master node, enable the CpuPool admission controller. Do this
-by appending it to the list of enabled admission controllers in the manifest
-/etc/kubernetes/manifests/kube-apiserver.yaml, like this:
-
-```
-...
-spec:
-  containers:
-  - command:
-    - /cpu-pools/kube-apiserver
-...
-    - --feature-gates=CPUManager=true
-    - --admission-control=NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota,CpuPool
-...
-```
-
-In principle you should not do anything to activate these changes. Kubelet
-monitors the manifest directory and tries to activate automatically any
-changes.
-
-### Make the Pool Configuration and Monitoring Utility Availble
-
-Assuming you usually manage your cluster from within the master node,
-copy the pool configuration and monitoring utility, pool-tool to your
-master node:
-
-```
-scp /path/to/repo/_output/local/bin/linux/amd64/pool-tool root@$master:/usr/local/bin
-```
-
-### Enabling Pool Reconfiguration by pool-tool
-
-Pool-tool is a command-line tool designed for changing CPU pool
-configuration on nodes.  It reads a CPU pool configuration policy and
-applies that to a list of nodes.
-
-In order for pool-tool to do its work, you must enable Dynamic Kubelet
-Configuration for the API server and kubelet. In Kubernetes 1.11 and
-later the feature should be on by default, but in 1.10 users need to
-enable the feature gate manually.
-
-First, create a directory for the configuration:
-
-```
-mkdir /var/lib/kubelet/config
-```
-
-Then add the related command-line options to the kubelet command line
-using the same technique which you used when adding the CPU manager
-parameters there:
-
-1. `--feature-gates=DynamicKubeletConfig=true`
-2. `--dynamic-config-dir=/var/lib/kubelet/config`
-
-Next, enable the same feature for the API server by including the following
-snippet in /etc/kubernetes/manifests/kube-apiserver.yaml:
-
-```
-...
-spec:
-  containers:
-  - command:
-    - /cpu-pools/kube-apiserver
-...
-    --feature-gates=DynamicKubeletConfig=true
-...
-```
-
-Finally, run kube-proxy to enable pool-tool to talk to the API server:
-
-```
-kubectl proxy -p 8001
-```
-
-With all of these in place, pool-tool should be able to alter the kubelet
-configuration.
-
-## Using pool-tool to Switch Between Different Configurations
-
-Pool-tool is designed to work together with cpumanager
-pool policy. The application sets the kubelet configuration to match
-with the loaded profile file on selected nodes. The profiles are yaml
-files and look like this:
-
-```
      cpupools:
-       - name: "ml"
-         cpus: "4-8,10"
        - name: "avx512"
-         cpus: "*"
+         cpus: "2,3"
        - name: "default"
-         cpus: "@2"
-```
+         cpus: "@1"
 
-Note that the file format is subject to change in future versions of
-this tool. The above example would create two cpu pools, ml and avx512,
-in addition to the always-existing default pool. Cores 4-8 (inclusive
-range) and 10 would be assigned to ml pool, and two unspecified cores
-would be assigned to default pool. The rest of the available cores would
-be assiged to avx512 pool. There are example profiles available in
-test/kubelet/pool-tool/samples directory of this repository.
+Note that the file format is subject to change in future versions of this tool. The above example would create one cpu pools,avx512, in addition to the always-existing default pool. Cores 2 and 3 (inclusive range) would be assigned to avx512 pool, and one unspecified cores would be assigned to default pool. There are example profiles available in test/kubelet/pool-tool/samples directory of this repository.  
 
-Usage:
-```
-     pool-tool --profile <profile> [--nodes node1,node2,...] [--port 8001] [--address 127.0.0.1]
-```
+Usage:  
 
-In normal use port and address don't need to be changed, given that the
-command is run on kubernetes master node.
+     pool-tool --profile <profile> [--nodes node1,node2,...] [--port 8001] [--address 127.0.0.1]  
 
-Pool-tool works by creating a ConfigMap object which changes the kubelet
-settings. The existing settings are copied to the ConfigMap. After the
-kubelet has been configured to use the new ConfigMap, the kubelet will
-restart with the new configuration. Note that command-line flags given
-to kubelet override the new ConfigMap configuration, but the ConfigMap
-configuration overrides the kubelet configuration provided by
-configuration files listed with --config flag. If the new configuration
-cannot be applied, the kubelet will fall back to the last good
-configuration settings.
+In normal use port and address don't need to be changed, given that the command is run on kubernetes master node.  
 
+Assign a pod to worker node  
+
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: vis3
+      namespace: kube-system
+    spec:
+      containers:
+      - image: quay.io/connordoyle/cpuset-visualizer
+        name: vis3
+        resources:
+          requests:
+            intel.com/cpupool.avx512: 2000
+            cpu: 2
+          limits:
+            intel.com/cpupool.avx512: 2000
+            cpu: 2
+      nodeSelector: 
+        kubernetes.io/hostname: lkk-nuc
+       
+Pool-tool works by creating a ConfigMap object which changes the kubelet settings. The existing settings are copied to the ConfigMap. After the kubelet has been configured to use the new ConfigMap, the kubelet will restart with the new configuration. Note that command-line flags given to kubelet override the new ConfigMap configuration, but the ConfigMap configuration overrides the kubelet configuration provided by configuration files listend with --config flag. If the new configuration cannot be applied, the kubelet will fall back to the last good configuration settings.
+
+## Verify CPU-POOLS feature
+- Forward pod's port to master on master node:  
+
+      kubectl --namespace=kube-system port-forward vis3 80:80
+
+- Get CPU allocation map:  
+
+      wget http://localhost:80/topology.svg
+
+  ![cpu allocation topology](https://github.com/chuan9/kubernetes/blob/devel/cpu-pool/v1.10.3/test/kubelet/pool-tool/samples/topology.svg)
+
+  From the picture, we can see that core 2 and core 3 are green which run the vis3 pod.
