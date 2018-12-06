@@ -18,6 +18,7 @@ package state
 
 import (
 	"sync"
+	"encoding/json"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
@@ -27,6 +28,7 @@ type stateMemory struct {
 	sync.RWMutex
 	assignments   ContainerCPUAssignments
 	defaultCPUSet cpuset.CPUSet
+	policyData    map[string]string
 }
 
 var _ State = &stateMemory{}
@@ -37,6 +39,7 @@ func NewMemoryState() State {
 	return &stateMemory{
 		assignments:   ContainerCPUAssignments{},
 		defaultCPUSet: cpuset.NewCPUSet(),
+		policyData:    make(map[string]string),
 	}
 }
 
@@ -68,6 +71,33 @@ func (s *stateMemory) GetCPUAssignments() ContainerCPUAssignments {
 	return s.assignments.Clone()
 }
 
+func (s *stateMemory) GetPolicyData() map[string]string {
+	s.RLock()
+	defer s.RUnlock()
+	return s.policyData
+}
+
+func (s *stateMemory) GetPolicyEntry(key string) (string, bool) {
+	s.RLock()
+	defer s.RUnlock()
+	value, ok := s.policyData[key]
+	return value, ok
+}
+
+func (s *stateMemory) GetPolicyEntryTo(key string, obj interface{}) bool {
+	s.RLock()
+	value, ok := s.policyData[key]
+	s.RUnlock()
+
+	if !ok {
+		return false
+	}
+	if err := json.Unmarshal([]byte(value), &obj); err != nil {
+		glog.Fatalf("[cpumanager] can't Unmarshal object: %+v", err)
+	}
+	return true
+}
+
 func (s *stateMemory) SetCPUSet(containerID string, cset cpuset.CPUSet) {
 	s.Lock()
 	defer s.Unlock()
@@ -90,6 +120,34 @@ func (s *stateMemory) SetCPUAssignments(a ContainerCPUAssignments) {
 
 	s.assignments = a.Clone()
 	glog.Infof("[cpumanager] updated cpuset assignments: \"%v\"", a)
+}
+
+func (s *stateMemory) SetPolicyData(data map[string]string) {
+	s.Lock()
+	defer s.Unlock()
+
+	s.policyData = data
+	glog.Infof("[cpumanager] updated policy data: \"%v\"", data)
+}
+
+func (s *stateMemory) SetPolicyEntry(key, value string) {
+	s.Lock()
+	defer s.Unlock()
+
+	s.policyData[key] = value
+	glog.Infof("[cpumanager] updated policy entry \"%s\" = \"%s\"", key, value)
+}
+
+func (s *stateMemory) SetPolicyEntryFrom(key string, obj interface{}) {
+	value, err := json.Marshal(obj)
+	if err != nil {
+		glog.Fatalf("[cpumanager] can't marshal object %+v: %+v", obj, err)
+	}
+
+	s.Lock()
+	defer s.Unlock()
+	s.policyData[key] = string(value)
+	glog.Infof("[cpumanager] updated policy entry \"%s\" = \"%s\"", key, value)
 }
 
 func (s *stateMemory) Delete(containerID string) {

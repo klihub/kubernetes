@@ -96,6 +96,7 @@ func (sc *stateCheckpoint) restoreState() error {
 
 	sc.cache.SetDefaultCPUSet(tmpDefaultCPUSet)
 	sc.cache.SetCPUAssignments(tmpAssignments)
+	sc.cache.SetPolicyData(checkpoint.PolicyData)
 
 	glog.V(2).Info("[cpumanager] state checkpoint: restored state from checkpoint")
 	glog.V(2).Infof("[cpumanager] state checkpoint: defaultCPUSet: %s", tmpDefaultCPUSet.String())
@@ -108,6 +109,7 @@ func (sc *stateCheckpoint) storeState() {
 	checkpoint := NewCPUManagerCheckpoint()
 	checkpoint.PolicyName = sc.policyName
 	checkpoint.DefaultCPUSet = sc.cache.GetDefaultCPUSet().String()
+	checkpoint.PolicyData = sc.cache.GetPolicyData()
 
 	for containerID, cset := range sc.cache.GetCPUAssignments() {
 		checkpoint.Entries[containerID] = cset.String()
@@ -153,6 +155,27 @@ func (sc *stateCheckpoint) GetCPUAssignments() ContainerCPUAssignments {
 	return sc.cache.GetCPUAssignments()
 }
 
+// GetPolicyData returns the current opaque policy data, if any.
+func (sc *stateCheckpoint) GetPolicyData() map[string]string {
+	sc.mux.RLock()
+	defer sc.mux.RUnlock()
+	return sc.cache.GetPolicyData()
+}
+
+// GetPolicEntry returns opaque policy data for a particular key.
+func (sc *stateCheckpoint) GetPolicyEntry(key string) (string, bool) {
+	sc.mux.RLock()
+	defer sc.mux.RUnlock()
+	return sc.cache.GetPolicyEntry(key)
+}
+
+// GetPolicyEntryTo returns opaque policy data for a key as a given object.
+func (sc *stateCheckpoint) GetPolicyEntryTo(key string, obj interface{}) bool {
+        sc.mux.RLock()
+        defer sc.mux.RUnlock()
+        return sc.cache.GetPolicyEntryTo(key, obj)
+}
+
 // SetCPUSet sets CPU set
 func (sc *stateCheckpoint) SetCPUSet(containerID string, cset cpuset.CPUSet) {
 	sc.mux.Lock()
@@ -175,6 +198,31 @@ func (sc *stateCheckpoint) SetCPUAssignments(a ContainerCPUAssignments) {
 	defer sc.mux.Unlock()
 	sc.cache.SetCPUAssignments(a)
 	sc.storeState()
+}
+
+// SetPolicyData sets the full set of opaque policy data.
+func (sc *stateCheckpoint) SetPolicyData(data map[string]string) {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+	sc.cache.SetPolicyData(data)
+	sc.storeState()
+}
+
+// SetPolicyEntry sets the opaque data for a particular key.
+func (sc *stateCheckpoint) SetPolicyEntry(key, value string) {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+	sc.cache.SetPolicyEntry(key, value)
+	sc.storeState()
+}
+
+// SetPolicyEntryFrom sets the opaque policy entry to an object.
+func (sc *stateCheckpoint) SetPolicyEntryFrom(key string, obj interface{}) {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+	sc.cache.SetPolicyEntryFrom(key, obj)
+	sc.storeState()
+	glog.Infof("[cpumanager] updated policy entry \"%s\" = %+v", key, obj)
 }
 
 // Delete deletes assignment for specified pod

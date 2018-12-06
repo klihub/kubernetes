@@ -30,6 +30,7 @@ type CPUManagerCheckpoint struct {
 	PolicyName    string            `json:"policyName"`
 	DefaultCPUSet string            `json:"defaultCpuSet"`
 	Entries       map[string]string `json:"entries,omitempty"`
+	PolicyData    map[string]string `json:"policyData,omitempty"`
 	Checksum      checksum.Checksum `json:"checksum"`
 }
 
@@ -37,6 +38,7 @@ type CPUManagerCheckpoint struct {
 func NewCPUManagerCheckpoint() *CPUManagerCheckpoint {
 	return &CPUManagerCheckpoint{
 		Entries: make(map[string]string),
+		PolicyData: make(map[string]string),
 	}
 }
 
