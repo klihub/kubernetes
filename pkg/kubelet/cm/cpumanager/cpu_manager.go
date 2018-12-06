@@ -19,6 +19,7 @@ package cpumanager
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,12 +110,24 @@ var _ Manager = &manager{}
 func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, nodeAllocatableReservation v1.ResourceList, stateFileDirectory string) (Manager, error) {
 	var policy Policy
 
-	switch policyName(cpuPolicyName) {
+	manager := &manager{
+		reconcilePeriod:            reconcilePeriod,
+		machineInfo:                machineInfo,
+		nodeAllocatableReservation: nodeAllocatableReservation,
+		nodeCapacity:               v1.ResourceList{},
+	}
+
+	args := strings.Split(cpuPolicyName, ":")
+	name := args[0]
+
+	switch policyName(name) {
 
 	case PolicyNone:
 		policy = NewNonePolicy()
 
 	case PolicyStatic:
+		fallthrough
+	case PolicyRelay:
 		topo, err := topology.Discover(machineInfo)
 		if err != nil {
 			return nil, err
@@ -131,14 +144,31 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 			// either we would violate our guarantee of exclusivity or need to evict
 			// any pod that has at least one container that requires zero CPUs.
 			// See the comments in policy_static.go for more details.
-			return nil, fmt.Errorf("[cpumanager] the static policy requires systemreserved.cpu + kubereserved.cpu to be greater than zero")
+			return nil, fmt.Errorf("[cpumanager] the %s policy requires systemreserved.cpu + kubereserved.cpu to be greater than zero", name)
 		}
 
 		// Take the ceiling of the reservation, since fractional CPUs cannot be
 		// exclusively allocated.
 		reservedCPUsFloat := float64(reservedCPUs.MilliValue()) / 1000
 		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
-		policy = NewStaticPolicy(topo, numReservedCPUs)
+
+		if name == string(PolicyStatic) {
+			policy = NewStaticPolicy(topo, numReservedCPUs)
+		} else {
+			var plugin string
+
+			if len(args) > 1 {
+				plugin = args[1]
+			} else {
+				plugin = ""
+			}
+
+			updateCapacityFunc := func(resources v1.ResourceList) {
+				manager.cacheCapacity(resources)
+			}
+
+			policy = NewRelayPolicy(topo, numReservedCPUs, plugin, updateCapacityFunc)
+		}
 
 	default:
 		glog.Errorf("[cpumanager] Unknown policy \"%s\", falling back to default policy \"%s\"", cpuPolicyName, PolicyNone)
@@ -150,14 +180,10 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		return nil, fmt.Errorf("could not initialize checkpoint manager: %v", err)
 	}
 
-	manager := &manager{
-		policy:                     policy,
-		reconcilePeriod:            reconcilePeriod,
-		state:                      stateImpl,
-		machineInfo:                machineInfo,
-		nodeAllocatableReservation: nodeAllocatableReservation,
-		nodeCapacity:               v1.ResourceList{},
-	}
+	manager.policy = policy
+	manager.state = stateImpl
+	manager.loadCachedCapacity()
+
 	return manager, nil
 }
 
@@ -222,6 +248,18 @@ func (m *manager) State() state.Reader {
 
 func (m *manager) GetCapacity() v1.ResourceList {
 	return m.nodeCapacity
+}
+
+func (m *manager) cacheCapacity(capacity v1.ResourceList) {
+	m.state.SetPolicyEntryFrom("capacity", capacity)
+	m.nodeCapacity = capacity
+}
+
+func (m *manager) loadCachedCapacity() {
+	m.state.GetPolicyEntryTo("capacity", &m.nodeCapacity)
+	for name, qty := range m.nodeCapacity {
+		glog.Infof("[cpumanager] cached capacity: %s: %s", name, qty.String())
+	}
 }
 
 type reconciledContainer struct {
