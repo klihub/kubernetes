@@ -38,12 +38,18 @@ type Reader interface {
 	GetDefaultCPUSet() cpuset.CPUSet
 	GetCPUSetOrDefault(containerID string) cpuset.CPUSet
 	GetCPUAssignments() ContainerCPUAssignments
+	GetPolicyData() map[string]string
+	GetPolicyEntry(string) (string, bool)
+	GetPolicyEntryTo(string, interface{}) bool
 }
 
 type writer interface {
 	SetCPUSet(containerID string, cpuset cpuset.CPUSet)
 	SetDefaultCPUSet(cpuset cpuset.CPUSet)
 	SetCPUAssignments(ContainerCPUAssignments)
+	SetPolicyData(map[string]string)
+	SetPolicyEntry(string, string)
+	SetPolicyEntryFrom(string, interface{})
 	Delete(containerID string)
 	ClearState()
 }
