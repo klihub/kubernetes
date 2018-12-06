@@ -883,3 +883,11 @@ func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceLi
 func (cm *containerManagerImpl) GetDevices(podUID, containerName string) []*podresourcesapi.ContainerDevices {
 	return cm.deviceManager.GetDevices(podUID, containerName)
 }
+
+func (cm *containerManagerImpl) GetCPUPluginResourceCapacity() v1.ResourceList {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
+		return cm.cpuManager.GetCapacity()
+	}
+
+	return v1.ResourceList{}
+}
