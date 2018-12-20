@@ -26,6 +26,8 @@ import (
 	"io/ioutil"
 	"os"
 
+	"encoding/json"
+
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -40,6 +42,7 @@ import (
 type mockState struct {
 	assignments   state.ContainerCPUAssignments
 	defaultCPUSet cpuset.CPUSet
+	policyData    map[string]string
 }
 
 func (s *mockState) GetCPUSet(containerID string) (cpuset.CPUSet, bool) {
@@ -79,8 +82,46 @@ func (s *mockState) SetCPUAssignments(a state.ContainerCPUAssignments) {
 	s.assignments = a.Clone()
 }
 
+func (s *mockState) SetPolicyData(data map[string]string) {
+	s.policyData = data
+}
+
+func (s *mockState) SetPolicyEntry(key, value string) {
+	s.policyData[key] = value
+}
+
+func (s *mockState) SetPolicyEntryFrom(key string, obj interface{}) {
+	value, err := json.Marshal(obj)
+	if err != nil {
+		panic(fmt.Sprintf("[cpumanager] can't marshal object %+v: %+v", obj, err))
+	}
+
+	s.policyData[key] = string(value)
+}
+
 func (s *mockState) GetCPUAssignments() state.ContainerCPUAssignments {
 	return s.assignments.Clone()
+}
+
+func (s *mockState) GetPolicyData() map[string]string {
+	return nil
+}
+
+func (s *mockState) GetPolicyEntry(key string) (string, bool) {
+	value, ok := s.policyData[key]
+	return value, ok
+}
+
+func (s *mockState) GetPolicyEntryTo(key string, obj interface{}) bool {
+	value, ok := s.policyData[key]
+
+	if !ok {
+		return false
+	}
+	if err := json.Unmarshal([]byte(value), &obj); err != nil {
+		panic(fmt.Sprintf("[cpumanager] can't Unmarshal object: %+v", err))
+	}
+	return true
 }
 
 type mockPolicy struct {
